@@ -1,0 +1,372 @@
+### Top {#Top}
+
+---
+title: "Hawk Classification"
+author: "Kevin Greenberg"
+output: html_document
+Data source: https://github.com/statmanrobin/Stat2Data/blob/master/data/Hawks.rda
+---
+
+# Purpose
+The goal of the hawks classification document is to compare different machine learning algorithms in their performance for classifiying different species of hawks. The data set has three different types of hawks, Coopers, Red-tailed, and Sharp-shinned hawks, with a variety of features/characterrists for each hawk. Using these characteristics, we will classify the species of hawks using the following algorithms: 
+
+[One rule learner] 
+
+[K-nearest neighbor (KNN)] 
+
+[Decision tree]
+
+[Boosted Decision tree] 
+
+[Support Vector Machines (SVM)] 
+
+Also included are a couple [Visualizations of the data], along with what fit indicies we will use, see [Kappa], and how we [Split the data]. Lastly, if you want the just want to see the brief findings you can jump to the [Comparing models].
+```{r setup, message=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = F, cache = TRUE, message=FALSE, warning = F, comment = "", tidy = TRUE)
+
+library(tidyverse)
+library("OneR")
+library(caret)
+library(class)
+library(gmodels)
+library(C50)
+library(kernlab)
+library(ggalt)
+library(ggfortify)
+library(gridExtra)
+
+hw <- read.csv("C:/Users/kevin/Desktop/Hawks/Hawks.csv")
+hw$Species <- factor(hw$Species , levels = c("CH", "RT", "SS"),labels = c("Coopers", "Red-tailed", "Sharp-shinned"))
+hw$Age <- factor(hw$Age , levels = c("A", "I"),labels = c("Adult", "Immature"))
+```
+
+### Data preprocessing
+First the data was reduced to the main features that were used to identify the species of hawks. The features were Wing length, Weight, Culmen length (beak), hallux length(backward facing talon)).
+
+```{r reduce}
+hw1 <- hw[,c(8, 11:14)]
+```
+
+In addition, the four features having missing values, so I did mean imputation(given the small amount of NA's in the selected features; <=1%)
+```{r mean imputation}
+
+for(i in 1:ncol(hw1)){
+  hw1[is.na(hw1[,i]), i] <- mean(hw1[,i], na.rm = TRUE)
+}
+summary(hw1) # double check NA's are imputed
+```
+
+# Visualizations of the data {#plots}
+
+Below we have two plots. The left plot shows the frequency of each specie of hawk in the data set. We see Red-tailed hawks are the most prominent species in the data.
+
+The right plot shows the species of hawks based on their weight and wing span. We can see there is distinction between the species on these two features, but the algorithms will determine what features are the most important for classifying the species of hawks. 
+
+```{r bar plot, fig.height= 5, fig.width=12}
+##see variable we are trying to predict.  
+# prep frequency table
+freqtable <- table(hw$Species)
+df <- as.data.frame.table(freqtable)
+
+
+# Plot
+p1 <- ggplot(df, aes(Var1, Freq, label = Freq))+ 
+  geom_bar(stat="identity", width = 0.5, fill="darkgoldenrod2") + 
+  labs(title="Bar Chart", 
+       subtitle="Count of Hawks by species", 
+       caption="Source: Frequency of Species from Hawks dataset",
+       x = "Count",
+       y = "Species") +
+  theme(axis.text.x = element_text(angle=0, vjust=0.6))+                          
+  geom_text(size = 5, position = position_stack(vjust = 0.5))
+
+
+df_ss <- hw1[hw1$Species == "Sharp-shinned", ]  
+df_rt <- hw1[hw1$Species == "Red-tailed", ]  
+df_c  <- hw1[hw1$Species == "Coopers", ]
+
+p2 <- ggplot(hw1, aes(Weight, Wing, col=Species)) + 
+  geom_point(aes(shape=Species), size=2) +   # draw points
+  labs(title="Hawks Clustering", 
+       subtitle="With Weight and Wing span as X and Y axis",
+       caption="Source: Hawks",
+       x = "Weight in grams",
+       y="Wing span in mm") + 
+  coord_cartesian(xlim = 1.2 * c(min(hw1$Weight), max(hw1$Weight)), 
+                  ylim = 1.2 * c(min(hw1$Wing), max(hw1$Wing)))+   # change axis limits
+  geom_encircle(data = df_ss, aes(x=Weight, y=Wing)) +   # draw circles
+  geom_encircle(data = df_rt, aes(x=Weight, y=Wing)) + 
+  geom_encircle(data = df_c, aes(x=Weight, y=Wing))
+
+par(mfrow=c(1,2), mar=c(4,4,1,1), oma=c(0.5,0.5,1,1))
+
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+# Machine learning algorithms
+Before we dive into the different models, it is important to explain how we will compare the models. The accuracy will be reported, but given the large class imbalance (i.e. the bar chart above) other indicies are better. We will use Kappa as it takes into account random chance. That is to say, with large class imbalance the model could guess Red-tailed hawks and would have an accuracy of 63%, which is poor but is better than random chance. There are other fit indicies we could use - Sensitivity, specificity, Precision, F, to name a few - but these are more apt for other types of classification. For instance, they would be good for cancer detection, churn rates, or search engine models as the first two examples have we could weight the value of a true positive & false negatives, while search engine models allow for a wide breadth or results, thus trying to avoid false positives (i.e. removing irrelevant search results).
+
+### Kappa {#Kappa}
+To understand Kappa, it is a value that ranges from 0 to 1 with following interpretation:
+
+Poor agreement = less than 0.20 
+
+Fair agreement = 0.20 to 0.40 
+
+Moderate agreement = 0.40 to 0.60 
+
+Good agreement = 0.60 to 0.80 
+
+Very good agreement = 0.80 to 1.00
+
+A Kappa close to 1 indicates the best fitting model for the data.
+
+
+## One Rule Learner {#OneR}
+First is the One rule learner, which is comes up with one rule to classify the species of hawks. It is a very simple algorithm that is used as our baseline. In addition it provides a good heuristic for what feature may be important. 
+
+From the model 
+```{r One rule learner}
+hw_1R <- OneR(Species ~ .,data = hw1) #here we are looking at all the features (represented by "." and how they relate to the type of species of hawk
+# hw_1R
+hw_1R_pred <- predict(hw_1R, hw1)
+# table(actual = hw$Species, predicted = hw_1R_pred)
+
+oner <- confusionMatrix(hw_1R_pred, hw$Species)
+a1 <- round(((oner[["overall"]][["Accuracy"]])*100), 2)
+k1 <- round(oner[["overall"]][["Kappa"]], 3)
+```
+### One rule learner output
+We see the accuracy is `r a1`% but this could be due to chance. As such, we see the Kappa is `r k1` suggesting our baseline model has good classification of the data. 
+
+### Drawback of One rule learner
+The downfall of the One rule learner algorithm is that is does not split that data into training, validation, & test data sets. In other words, the data models all the data we have and we cannot know how it will perform on future, unseen data. It only creates one rule to categorize all the data we have. As such, all the following algorithms split the data into training, validation and test data sets.
+
+## Split the data {#spd}
+The original data set has 908 hawks, the data will be split in a training data set with 80% of the data and the validation and test data sets will each 10% of the data. THis gives am 80/10/10 split. The reason for splitting the data into 3 is we can first train the algorithms on the training data set, then see how they perform on the validation data set. In addition, we can tune parameters to determine how they influence model fit. After which,  we will determine which algorithm best classifies the data. Lastly, we can test the algorithm on completely unseen data to give us an idea for how it will perform in the future for any new data we will encounter.  
+
+
+## K-nearest neighbor (KNN) {#KNN}
+For KNN models, we have to standardize the hawk characteristics to put them on the same scale (i.e. before scaling, Wing span was in mm and Weight was in grams), which helps optimize the algorithm
+```{r KNN}
+##Getting the labels
+RNGversion("4.0.3"); set.seed(123) ##123 is arbitrary
+train_sample <- sample(908, 817)
+val_knn_sample <- sample(817, 726)
+hw_knn_test_labels <- hw1[-train_sample,1] # gets 91 from main df
+train_sample1<- hw1[train_sample,1:5] # gets remaining 817 from main df
+hw_knn_val_labels <- train_sample1[-val_knn_sample,1] # gets 91 from remaining 817
+hw_knn_train_labels <- train_sample1[val_knn_sample,1] # gets 726 hawks
+
+#Scale
+hw_knn <- hw1[,c(2:5)]
+hw_knn <- scale(hw_knn)
+hw_knn <- as.data.frame(hw_knn)
+
+#get the test df
+hw_knn_test  <- hw_knn[-train_sample, ]
+# Validation df
+train_sample2<- hw_knn[train_sample,]
+hw_knn_val <- train_sample2[-val_knn_sample, ]
+#get the train df
+hw_knn_train  <- train_sample2[val_knn_sample, ]
+
+
+
+######k-nn training 
+hw_knn_val_pred <- knn(train = hw_knn_train, 
+                    test = hw_knn_val,
+                    cl = hw_knn_train_labels, 
+                    k = 3)
+
+###evaluate model
+# CrossTable(x = hw_knn_val_labels, y = hw_knn_val_pred,
+#            prop.chisq = FALSE)
+
+k <- confusionMatrix(hw_knn_val_pred, hw_knn_val_labels)
+
+k2 <- round(k[["overall"]][["Kappa"]], 3) # gives Kappa
+# e <- as.data.frame(k[["byClass"]]) # to get other indicies
+
+
+```
+### KNN output
+The Kappa for the KNN model is `r k2`, which is slightly worse than our baseline One rule learner model that had a Kappa of `r k1`. This indicates the KNN model may not be the best algorithm for the data. As such, we'll test a decision tree next. 
+
+## Decision tree {#DT}
+```{r DT}
+####split data into training and test sets. 90% for training and 10% for test. dont need to standardize
+RNGversion("4.0.3"); set.seed(123) ##123 is arbitrary
+train_dt_sample <- sample(908, 817) # here we randomly choose 817 numbers from number 1-908
+##get the training df
+hw_dt_train <- hw1[train_dt_sample, ]
+#get the test df
+hw_dt_test  <- hw1[-train_dt_sample, ]
+
+val_dt_sample <- sample(817, 726) # here we randomly choose 654 numbers from number 1-817
+##get the validation df
+hw_dt_val  <- hw_dt_train[-val_dt_sample, ]
+#get the train df
+hw_dt_train <- hw_dt_train[val_dt_sample, ]
+
+#This is comparing the 4 columns of attributes to the target variable(species)
+hw_dt_model <- C5.0(hw_dt_train[2:5], hw_dt_train$Species)
+# hw_dt_model # we see there are 4 predictors and has 11 branches 
+# summary(hw_dt_model)
+ 
+
+
+##evaluate the model on the test data
+hw_dt_pred <- predict(hw_dt_model, hw_dt_val)
+
+k <- confusionMatrix(hw_dt_pred, hw_dt_val$Species)
+
+k3 <- round(k[["overall"]][["Kappa"]], 3)
+
+```
+### Decision tree output
+The Kappa for the Decision tree model is `r k3`, which is close, but still slightly worse than our baseline One rule learner model that had a Kappa of `r k1`. Next I boosted the decision tree to see if this can increase the Kappa, thus the classification.
+
+## Boosted Decision tree {#BoostedDT}
+```{r Boosted DT}
+#adaptive Boost the model
+start_time <- Sys.time()
+hw_model10 <- C5.0(hw_dt_train[2:5], hw_dt_train$Species, trials = 10)
+#evaluate the boosted model
+hw_pred10 <- predict(hw_model10, hw_dt_val)
+end_time <- Sys.time()
+t1 <- round(end_time - start_time, 3)
+
+# hw_model10  
+# summary(hw_model10)
+
+k <- confusionMatrix(hw_pred10, hw_dt_val$Species)
+
+k4 <- round(k[["overall"]][["Kappa"]], 3)
+
+```
+### Boosted decision tree output
+The Kappa for the Boosted decision tree model is `r k4`, and this is a much better fit compared to the baseline model that had a Kappa equal `r k1`. The Boosted decision tree is currently the most accurate model in classifying the species of hawks.
+
+## Support Vector Machines (SVM) {#SVM}
+```{r vdot}
+RNGversion("4.0.3"); set.seed(123) ##123 is arbitrary
+train_sample <- sample(908, 817) # here we randomly choose 817 numbers from number 1-908
+##get the training df
+hw_train <- hw1[train_sample, ]
+#get the test df
+hw_test  <- hw1[-train_sample, ]
+
+val_sample <- sample(817, 726) # here we randomly choose 654 numbers from number 1-817
+##get the validation df
+hw_val  <- hw_train[-val_sample, ]
+#get the train df
+hw_train <- hw_train[val_sample, ]
+
+
+start_time <- Sys.time()
+#training model  with a "vanilladot" kernal which is a linear kernal
+hw_classifiervd <- ksvm(Species ~ ., data = hw_train,
+                        kernel = "vanilladot")
+
+#predict allows us to see how the model does on the test data
+hw_predictionsvd <- predict(hw_classifiervd, hw_val)
+end_time <- Sys.time()
+t2 <- round(end_time - start_time, 3)
+
+
+#hw_classifiervd
+
+k <- confusionMatrix(hw_predictionsvd, hw_val$Species)
+
+k5 <- round(k[["overall"]][["Kappa"]], 3)
+
+```
+### SVM with vanilla dot kernal output
+The Kappa for the Boosted decision tree model is `r k5`, and this is an identical fit to the boosted decision tree. For fun though I tried a different kernal to see if we can tune some parameters to increase the accuracy. The next algorithm is and SVM with the rbfdot kernal. Additionally, I examined if we could alter the cost function in the algorithm to influence the model fit. 
+
+
+```{r rbfdot}
+
+####Using a different kernel, rbfdot
+start_time <- Sys.time()
+hw_classifierrbf <- ksvm(Species ~ ., data = hw_train,
+                         kernel = "rbfdot")
+
+#evaluate the model
+hw_predictionsrbf <- predict(hw_classifierrbf, hw_val)
+end_time <- Sys.time()
+t3 <- round(end_time - start_time, 3)
+
+#hw_classifierrbf
+
+cost_values <- c(1, seq(from = 1, to = 40, by = 2))
+
+accuracy_values <- sapply(cost_values, function(x) {
+  set.seed(12345)
+  m <- ksvm(Species ~ ., data = hw_train,
+            kernel = "rbfdot", C = x)
+  pred <- predict(m, hw_test)
+  agree <- ifelse(pred == hw_val$Species, 1, 0)
+  accuracy <- sum(agree) / nrow(hw_test)
+  return (accuracy)
+})
+
+plot(cost_values, accuracy_values, type = "b")
+###based on this, the cost value makes no difference for the "rbfdot" kernel
+
+
+k <- confusionMatrix(hw_predictionsrbf, hw_val$Species)
+
+k6 <- round(k[["overall"]][["Kappa"]], 3)
+```
+
+
+### SVM with rbfdot kernal output
+
+The Kappa for the SVM with rbfdot kernal model is `r k6`, which is the same as our SVM with rbfdot kernal model and the Boosted decision tree model that both had a Kappa of `r k4`. In addition, the plot shows different costs values that could be used to tune the model. For this data set the cost value has no influence in the accuracy of classification. This makes sense as a Cost value is more apt in data that is non-linear as the cost value alters the classification from trying to maximize the margin between the classes and instead tries to minimize the cost value. 
+
+
+### Comparing models {#compare}
+Given that we have 3 algorithms that have the same accuracy for classifying the species of hawks. As such, to pick what model we want to use on the test training data set, there are few factors we can consider. One is the time it takes to run each model. The Boosted decision tree took `r t1` seconds, SVM with vanilla kernal took `r t2` seconds, and SVM with rbfdot took `r t3` seconds.  The other aspect is interpretability of each model. The boosted decision tree is intuitive compared to SVM models, which transforms the data into a feature space, then finds a hyperplane that best separates(classifies) the data. With the current data set, any of these algorithms could be used, but if our model was prone to overfitting we may want to choose an SVM algorithm. For this example we will use the Boosted decision tree because it is the fastest of the model. 
+
+### Final algorithm {#final}
+
+
+```{r final}
+#evaluate the boosted model on the test data
+hw_pred10_test <- predict(hw_model10, hw_dt_test)
+
+
+# hw_model10 # we see there are 4 predictors and 10 iterations, and average tree is 6.5 
+# summary(hw_model10)
+
+k <- confusionMatrix(hw_pred10_test, hw_dt_test$Species)
+
+k7 <- round(k[["overall"]][["Kappa"]], 3)
+af <- (round(k[["overall"]][["Accuracy"]], 2)) * 100
+
+```
+The Boosted decision tree performs very well on the test data set. In fact, Kappa is perfect `r k7`. In addition below we can visualize the algorithm. The model uses the hawks Culmen (beak length) and Hallux (talon length) to classify the species of hawks. The nodes at the bottom indicate the likelihood of a species being classified based on decisions in the model. For instance, in Node 3, there were 206 hawks classified as Sharp-shinned because first the bird had a Culmen less than or equal to 20 mm and a hallux less than or equal to 15.7 mm. 
+
+```{r dt plot, fig.height=6, fig.width=12}
+# Visualize the decision tree 
+hw_dt_train$Species <- factor(hw_dt_train$Species, labels = c("C", "RT", "SS"))
+plot(hw_model10)
+```
+Note: "C" = Coopers; "RT" = Red-tailed; "SS" = Sharp-shinned
+
+# Conclusion {#Conclusion}
+After running the  different models the Boosted decision tree was chosen as the most accurate and efficient model for the given data. On the test data set the algorithm had a Kappa of `r k7` and an accuracy of `r af`%. From the model it was seen that the Culmen and Hallux are the main features used to classify the species of hawks. This makes sense because attempting to identify a hawk by eye the average person typically uses the size (weight and wing span) of the bird, yet the algorithm and wildlife biologists use other features to identify hawks. 
+
+### Future directions
+The next step could be to ask questions, such as are there more Adult Cooper's hawks than the other hawks? Then we can start to wonder why this may be the case and what we can do help the survival of these animals.
+
+Disclaimer: I know very little about birds. I could not tell the difference between hawks or falcons and  probably the only large bird I could identify is a bald eagle. But they all are gorgeous animals. 
+
+Jump to [Top]
+
+
+
+
